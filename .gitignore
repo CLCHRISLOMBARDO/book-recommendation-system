@@ -1,0 +1,4 @@
+.env_sr
+dataset/
+outputs/
+__pycache__
