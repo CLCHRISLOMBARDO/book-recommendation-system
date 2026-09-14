@@ -7,9 +7,14 @@ EJEMPLO_FILE = "dataset/ejemplo.csv"
 
 # OUTPUTS
        # MODELO FINAL
-OUTPUTS_MODELO_FINAL = "outputs/scripts/modelos_finales/"
+OUTPUTS_MODELO_TRAIN = "outputs/modelos_train/"
+OUTPUTS_MODELO_FINAL = "outputs/modelos_finales/"
 
 OUTPUTS_DATASETS = "outputs/datasets/"
+
+OUTPUTS_RESULTADOS = "outputs/resultados/"
+
+OUTPUTS_CHECKPOINTS ="outputs/checkpoints/"
 
 # FEATURES
 FEATURES_OUT = [

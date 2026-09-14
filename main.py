@@ -4,7 +4,7 @@ import numpy as np
 
 # Importaciones de tus módulos locales
 from src.config import OUTPUTS_DATASETS, TARGET, FEATURES, FEATURES_OUT
-from src.utils import train_test_split_dfs ,model_baseline_train,evaluar_experimentos,model_baseline_train_ranker      
+from src.utils import folders_creation, train_test_split_dfs,model_baseline_train_lgbm_reg ,model_baseline_train_lgbm_ranker, calcular_feature_importance,evaluar_experimentos      
 from src.feat_eng import pipeline_feature_engineering
 from src.retrievals import (                                # Asegurate de importar tus retrievals si los usas acá
     retrieval_q1_populares, 
@@ -22,7 +22,7 @@ def main():
     print("=" * 60)
 
     # 1. Asegurar que existan los directorios de outputs necesarios
-    os.makedirs(OUTPUTS_DATASETS, exist_ok=True)
+    folders_creation()
     #os.makedirs("outputs/modelo", exist_ok=True)
 
 # 2. Split de Train y Test (Basado en los últimos 20 libros por usuario)
@@ -46,25 +46,38 @@ def main():
 
     # 5. Entrenamiento del Modelo Base (LightGBM Regressor)
     print("\n--- PASO 3: Entrenando modelo LightGBM ---")
-    modelo_base = model_baseline_train_ranker(
+    modelo_lgbm_reg = model_baseline_train_lgbm_reg(
+        df_train=df_train_features, 
+            features_seleccionadas=features_a_usar, 
+            seed=42)
+
+    modelo_lgbm_ranker = model_baseline_train_lgbm_ranker( 
         df_train=df_train_features, 
         features_seleccionadas=features_a_usar, 
         seed=42
     )
 
+    # Calculo FEAT IMP
+    df_importances_reg= calcular_feature_importance(modelo_lgbm_reg,'lgbm_regressor')
+    df_importances_ranker= calcular_feature_importance(modelo_lgbm_ranker,'lgbm_ranker')
+
     # 6. Evaluación de Experimentos (Retrievals x Rankers)
     print("\n--- PASO 4: Evaluando matriz de experimentos (Retrievals + Ranking) ---")
+
     df_resultados = evaluar_experimentos(
         df_test=df_test, 
         df_train_features=df_train_features, 
-        modelo_lgbm=modelo_base
+        modelo_lgbm_reg=modelo_lgbm_reg ,
+        modelo_lgbm_ranker=modelo_lgbm_ranker
     )
 
     print("\n" + "=" * 60)
     print("RESULTADOS FINALES DE LOS EXPERIMENTOS:")
     print("=" * 60)
     print(df_resultados.to_string(index=False))
-    print("\nResultados guardados con éxito en 'outputs/datasets/resultados_experimentos.csv'")
+
+    print('*'*30 +"FIN DEL PROCESO" + '*'*30 )
+
 
 
 if __name__ == "__main__":

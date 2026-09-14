@@ -7,8 +7,13 @@ from src.config import BASE_DB
         # df del segmento especifico
 
 def obtener_libros_leidos(df: pd.DataFrame, id_lector):
-    """Devuelve una lista con los IDs de los libros que el usuario ya leyó en train."""
-    return df[df["id_lector"] == id_lector]["id_libro"].tolist()
+    """Devuelve una lista con los IDs de los libros que el usuario ya leyó en train ordenados."""
+    
+
+def obtener_libros_leidos(df: pd.DataFrame, id_lector):
+    """Devuelve un SET con los IDs de los libros que el usuario ya leyó."""
+    # return df[df["id_lector"] == id_lector]["id_libro"].tolist()
+    return set(df[df["id_lector"] == id_lector]["id_libro"])
 
 
 def retrieval_q1_populares(df: pd.DataFrame, id_lector, top_n=100) -> list:
@@ -16,8 +21,13 @@ def retrieval_q1_populares(df: pd.DataFrame, id_lector, top_n=100) -> list:
     libros_leidos = obtener_libros_leidos(df, id_lector)
     
     # Agrupamos en el df_train para saber cuáles son los más leídos de la historia
-    populares = df["id_libro"].value_counts().index.tolist()
-    
+    #populares = df["id_libro"].value_counts().index.tolist()
+    populares = (
+    df.groupby("id_libro")["rating_promedio_te_por_libro"]
+    .max()                              # 1. Obtenemos el rating por libro
+    .sort_values(ascending=False)       # 2. Ordenamos de mayor a menor rating
+    .index.tolist()                     # 3. Extraemos el índice (los id_libro) a una lista
+    )
     # Filtramos los que el usuario ya leyó
     candidatos = [libro for libro in populares if libro not in libros_leidos][:top_n]
     return candidatos
@@ -90,7 +100,13 @@ def retrieval_q4_popularidad_pais(df: pd.DataFrame, id_lector, top_n=100) -> lis
     df_pais = df[df["pais"] == pais_lector]
     
     # 3. Calculamos populares de ese país y filtramos los ya leídos
-    populares_pais = df_pais["id_libro"].value_counts().index.tolist()
+    populares_pais = (
+    df_pais.groupby("id_libro")["rating_promedio_te_por_libro"]
+    .max()                              # 1. Obtenemos el rating por libro
+    .sort_values(ascending=False)       # 2. Ordenamos de mayor a menor rating
+    .index.tolist()                     # 3. Extraemos el índice (los id_libro) a una lista
+    )
+    #populares_pais = df_pais["id_libro"].value_counts().index.tolist()
     candidatos = [libro for libro in populares_pais if libro not in libros_leidos][:top_n]
     
     return candidatos
@@ -103,17 +119,28 @@ def retrieval_q5_trending(df: pd.DataFrame, id_lector, top_n=100) -> list:
     # Nos aseguramos de tener la fecha como datetime
     if "fecha_interaccion" not in df.columns:
         return []
-        
+
+    # 1. Creamos una Serie temporal con las fechas parseadas
+    fechas_dt = pd.to_datetime(df["fecha_interaccion"], format="%d-%m-%Y")
     #df["fecha_interaccion"] = pd.to_datetime(df["fecha_interaccion"], format="%d-%m-%Y",errors='coerce')
-    df["fecha_interaccion"] = pd.to_datetime(df["fecha_interaccion"], format="%d-%m-%Y")
+    
+    #df["fecha_interaccion"] = pd.to_datetime(df["fecha_interaccion"], format="%d-%m-%Y")
 
     
     # Calculamos la fecha de corte (ej. el último año de interacciones en la base)
-    fecha_maxima = df["fecha_interaccion"].max()
-    fecha_corte = fecha_maxima - pd.DateOffset(months=12) 
+    fecha_maxima = fechas_dt.max()
+    fecha_corte = fecha_maxima - pd.DateOffset(months=12)
+
+    df_reciente = df[fechas_dt >= fecha_corte]
     
-    df_reciente = df[df["fecha_interaccion"] >= fecha_corte]
-    populares_recientes = df_reciente["id_libro"].value_counts().index.tolist()
+    
+    populares_recientes = (
+    df_reciente.groupby("id_libro")["rating_promedio_te_por_libro"]
+    .max()                              # 1. Obtenemos el rating por libro
+    .sort_values(ascending=False)       # 2. Ordenamos de mayor a menor rating
+    .index.tolist()                     # 3. Extraemos el índice (los id_libro) a una lista
+    )
+    #populares_recientes = df_reciente["id_libro"].value_counts().index.tolist()
     
     candidatos = [libro for libro in populares_recientes if libro not in libros_leidos][:top_n]
     return candidatos
