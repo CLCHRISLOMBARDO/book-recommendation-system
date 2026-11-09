@@ -1,161 +1,115 @@
 import pandas as pd
 import sqlite3
+
 from src.config import BASE_DB
-## Los df pueden ser : 
-        # df_train
-        # df_total
-        # df del segmento especifico
-
-def obtener_libros_leidos(df: pd.DataFrame, id_lector):
-    """Devuelve una lista con los IDs de los libros que el usuario ya leyó en train ordenados."""
-    
-
-def obtener_libros_leidos(df: pd.DataFrame, id_lector):
-    """Devuelve un SET con los IDs de los libros que el usuario ya leyó."""
-    # return df[df["id_lector"] == id_lector]["id_libro"].tolist()
-    return set(df[df["id_lector"] == id_lector]["id_libro"])
 
 
-def retrieval_q1_populares(df: pd.DataFrame, id_lector, top_n=100) -> list:
-    """Q1: Los libros más populares (Se calcula sobre df_train para no espiar test)."""
-    libros_leidos = obtener_libros_leidos(df, id_lector)
-    
-    # Agrupamos en el df_train para saber cuáles son los más leídos de la historia
-    #populares = df["id_libro"].value_counts().index.tolist()
-    populares = (
-    df.groupby("id_libro")["rating_promedio_te_por_libro"]
-    .max()                              # 1. Obtenemos el rating por libro
-    .sort_values(ascending=False)       # 2. Ordenamos de mayor a menor rating
-    .index.tolist()                     # 3. Extraemos el índice (los id_libro) a una lista
-    )
-    # Filtramos los que el usuario ya leyó
-    candidatos = [libro for libro in populares if libro not in libros_leidos][:top_n]
+def retrieval_q1_populares(id_lector, top_n, cache):
+    leidos = cache["dict_leidos"].get(id_lector, set())
+    # Iteramos sobre la lista global, frenando cuando llegamos a top_n
+    candidatos = []
+    for lib in cache["populares_global"]:
+        if lib not in leidos:
+            candidatos.append(lib)
+            if len(candidatos) == top_n: break
     return candidatos
 
-
-def retrieval_q2_mismo_autor(df: pd.DataFrame, id_lector, top_n=100) -> list:
-    """Q2: Libros de los mismos autores que el usuario ya leyó usando SQL."""
-    libros_leidos = obtener_libros_leidos(df, id_lector)
+def retrieval_q2_mismo_autor(id_lector, top_n, cache):
+    leidos = cache["dict_leidos"].get(id_lector, set())
+    if not leidos:
+        return []
     
-    # 1. Buscamos qué autores leyó en TRAIN (esquivando Data Leakage)
-    autores_leidos = df[df["id_lector"] == id_lector]["autor"].dropna().unique().tolist()
+    # Identificamos qué autores leyó usando el set de leídos
+    autores_leidos = {cache["dict_libro_autor"].get(lib) for lib in leidos}
+    autores_leidos.discard(None) # Por si hay vacíos
     
-    if len(autores_leidos) == 0:
-        return [] # Usuario Cold-Start
+    # Juntamos todos los libros de esos autores
+    candidatos_potenciales = set()
+    for autor in autores_leidos:
+        candidatos_potenciales.update(cache["libros_por_autor"].get(autor, set()))
         
-    # 2. Vamos a la base SQL a buscar TODOS los libros de esos autores
-    con = sqlite3.connect(BASE_DB)
-    # Armamos la cantidad de signos de interrogación para la query ('?', '?', '?')
-    placeholders = ','.join(['?'] * len(autores_leidos)) 
-    query = f"SELECT id_libro FROM libros WHERE autor IN ({placeholders})"
-    
-    libros_del_autor = pd.read_sql(query, con, params=autores_leidos)["id_libro"].tolist()
-    con.close()
-    
-    # 3. Filtramos los que ya leyó
-    candidatos = [libro for libro in libros_del_autor if libro not in libros_leidos][:top_n]
-    return candidatos
+    # Removemos los que ya leyó y ordenamos por popularidad para devolver los mejores
+    candidatos_validos = candidatos_potenciales - leidos
+    return [lib for lib in cache["populares_global"] if lib in candidatos_validos][:top_n]
 
-
-def retrieval_q3_mismo_genero(df: pd.DataFrame, id_lector, top_n=100) -> list:
-    """Q3: Libros de los mismos géneros que el usuario ya leyó usando SQL."""
-    libros_leidos = obtener_libros_leidos(df, id_lector)
-    
-    # 1. Buscamos qué géneros leyó en TRAIN
-    # Nota: uso 'genero_libro' que es como nombraste a la columna en tu merge inicial
-    generos_leidos = df[df["id_lector"] == id_lector]["genero_libro"].dropna().unique().tolist()
-    
-    if len(generos_leidos) == 0:
+def retrieval_q3_mismo_genero(id_lector, top_n, cache):
+    leidos = cache["dict_leidos"].get(id_lector, set())
+    if not leidos:
         return []
         
-    # 2. Vamos a la base SQL a buscar TODOS los libros de esos géneros
-    con = sqlite3.connect(BASE_DB)
-    placeholders = ','.join(['?'] * len(generos_leidos))
-    # Asumimos que en la tabla libros nativa la columna se llama 'genero'
-    query = f"SELECT id_libro FROM libros WHERE genero IN ({placeholders})"
+    generos_leidos = {cache["dict_libro_genero"].get(lib) for lib in leidos}
+    generos_leidos.discard(None)
     
-    libros_del_genero = pd.read_sql(query, con, params=generos_leidos)["id_libro"].tolist()
-    con.close()
-    
-    # 3. Filtramos los que ya leyó
-    candidatos = [libro for libro in libros_del_genero if libro not in libros_leidos][:top_n]
-    return candidatos
-
-
-def retrieval_q4_popularidad_pais(df: pd.DataFrame, id_lector, top_n=100) -> list:
-    """Q5: Libros más populares en el país del lector. Excelente para Cold-Start."""
-    libros_leidos = obtener_libros_leidos(df, id_lector)
-    
-    # 1. Buscamos el país del lector
-    datos_lector = df[df["id_lector"] == id_lector]
-    if datos_lector.empty:
-        return []
+    candidatos_potenciales = set()
+    for genero in generos_leidos:
+        candidatos_potenciales.update(cache["libros_por_genero"].get(genero, set()))
         
-    pais_lector = datos_lector["pais"].iloc[0]
+    candidatos_validos = candidatos_potenciales - leidos
+    return [lib for lib in cache["populares_global"] if lib in candidatos_validos][:top_n]
+
+def retrieval_q4_popularidad_pais(id_lector, top_n, cache):
+    leidos = cache["dict_leidos"].get(id_lector, set())
+    pais = cache["dict_lector_pais"].get(id_lector, "Desconocido")
     
-    if pais_lector == "Desconocido":
-        return [] # Si no sabemos el país, no podemos aportar nada
-        
-    # 2. Filtramos la base para quedarnos solo con interacciones de ese país
-    df_pais = df[df["pais"] == pais_lector]
+    # Si no conocemos el país, devolvemos vacío
+    populares_del_pais = cache["populares_por_pais"].get(pais, [])
     
-    # 3. Calculamos populares de ese país y filtramos los ya leídos
-    populares_pais = (
-    df_pais.groupby("id_libro")["rating_promedio_te_por_libro"]
-    .max()                              # 1. Obtenemos el rating por libro
-    .sort_values(ascending=False)       # 2. Ordenamos de mayor a menor rating
-    .index.tolist()                     # 3. Extraemos el índice (los id_libro) a una lista
-    )
-    #populares_pais = df_pais["id_libro"].value_counts().index.tolist()
-    candidatos = [libro for libro in populares_pais if libro not in libros_leidos][:top_n]
-    
+    candidatos = []
+    for lib in populares_del_pais:
+        if lib not in leidos:
+            candidatos.append(lib)
+            if len(candidatos) == top_n: break
     return candidatos
 
-
-def retrieval_q5_trending(df: pd.DataFrame, id_lector, top_n=100) -> list:
-    """Q6: Libros trending (Más leídos en el último tiempo)."""
-    libros_leidos = obtener_libros_leidos(df, id_lector)
+def retrieval_q5_trending(id_lector, top_n, cache):
+    leidos = cache["dict_leidos"].get(id_lector, set())
     
-    # Nos aseguramos de tener la fecha como datetime
-    if "fecha_interaccion" not in df.columns:
-        return []
-
-    # 1. Creamos una Serie temporal con las fechas parseadas
-    fechas_dt = pd.to_datetime(df["fecha_interaccion"], format="%d-%m-%Y")
-    #df["fecha_interaccion"] = pd.to_datetime(df["fecha_interaccion"], format="%d-%m-%Y",errors='coerce')
-    
-    #df["fecha_interaccion"] = pd.to_datetime(df["fecha_interaccion"], format="%d-%m-%Y")
-
-    
-    # Calculamos la fecha de corte (ej. el último año de interacciones en la base)
-    fecha_maxima = fechas_dt.max()
-    fecha_corte = fecha_maxima - pd.DateOffset(months=12)
-
-    df_reciente = df[fechas_dt >= fecha_corte]
-    
-    
-    populares_recientes = (
-    df_reciente.groupby("id_libro")["rating_promedio_te_por_libro"]
-    .max()                              # 1. Obtenemos el rating por libro
-    .sort_values(ascending=False)       # 2. Ordenamos de mayor a menor rating
-    .index.tolist()                     # 3. Extraemos el índice (los id_libro) a una lista
-    )
-    #populares_recientes = df_reciente["id_libro"].value_counts().index.tolist()
-    
-    candidatos = [libro for libro in populares_recientes if libro not in libros_leidos][:top_n]
+    candidatos = []
+    for lib in cache["populares_trending"]:
+        if lib not in leidos:
+            candidatos.append(lib)
+            if len(candidatos) == top_n: break
     return candidatos
 
-
-def retrieval_hibrido(df: pd.DataFrame, id_lector, top_n_por_query=50) -> list:
-    """Unión de todas las estrategias."""
+def retrieval_hibrido(id_lector, top_n, cache):
+    # Asignamos una cuota equitativa a cada estrategia
+    top_n_por_query = max(1, top_n // 5) 
     
-    c1 = retrieval_q1_populares(df, id_lector, top_n=top_n_por_query)
-    c2 = retrieval_q2_mismo_autor(df, id_lector, top_n=top_n_por_query)
-    c3 = retrieval_q3_mismo_genero(df, id_lector, top_n=top_n_por_query)
-    c4 = retrieval_q4_popularidad_pais(df, id_lector, top_n=top_n_por_query)
-    c5 = retrieval_q5_trending(df, id_lector, top_n=top_n_por_query)
+    c1 = retrieval_q1_populares(id_lector, top_n_por_query, cache)
+    c2 = retrieval_q2_mismo_autor(id_lector, top_n_por_query, cache)
+    c3 = retrieval_q3_mismo_genero(id_lector, top_n_por_query, cache)
+    c4 = retrieval_q4_popularidad_pais(id_lector, top_n_por_query, cache)
+    c5 = retrieval_q5_trending(id_lector, top_n_por_query, cache)
     
-    # El set elimina los duplicados de las distintas fuentes
     candidatos_unicos = list(set(c1 + c2 + c3 + c4 + c5))
-    
     return candidatos_unicos
+
+
+def retrieval_q6_productos_asociados(id_lector, top_n, cache):
+    leidos = cache["dict_leidos"].get(id_lector, set())
+    if not leidos:
+        return []
+        
+    candidatos_potenciales = set()
+    
+    # Buscamos todos los vecinos de los libros que leyó
+    for lib in leidos:
+        asociados = cache["jaccard_matrix"].get(lib, {}).keys()
+        candidatos_potenciales.update(asociados)
+        
+    # Quitamos los que ya leyó
+    candidatos_validos = list(candidatos_potenciales - leidos)
+    
+    return candidatos_validos[:top_n]
+
+def retrieval_q7_ease(id_lector, top_n, cache=None):
+    """Retrieval usando el modelo EASE entrenado."""
+    modelo_ease = cache.get('modelo_ease')
+    
+    if modelo_ease is None:
+        print("Advertencia: modelo_ease no encontrado en cache.")
+        return []
+        
+    # EASE devuelve un diccionario {id_libro: score}. Solo extraemos las keys.
+    dict_scores = modelo_ease.predecir_usuario_con_scores(id_lector, top_n=top_n)
+    return list(dict_scores.keys())

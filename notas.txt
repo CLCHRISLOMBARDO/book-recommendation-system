@@ -1,0 +1,21 @@
+# config.py
+    # Tengo que definir como paso los flujos a los estados cuando pasa el df_train el df_test o el df_total
+
+# Estruturas tablas
+    # interacciones
+        # Creé la columna fecha_interaccion, que es lo mismo que fecha pero yyyy-mm-dd 
+
+
+# split train test
+    # df_train y df_test quedan con [id_libro , id_lector,fecha_interaccion,rating]. fecha_interaccion es la creada con yyyy-mm-dd
+
+# features_eng
+    # mergeo_features_bases
+        # Es el mergeo de los libros y lectores con df_train o df_test o df_total
+        # Aca se le nulea la columna fecha_interaccion al df_test ya que no tendriamos este dato al predecir
+
+# retrievals
+    # construir_cache_retrieval : Recibe df_train , df_lectores y df_libros
+        # cache["populares_global"] --> Tiene que estar la columna rating_promedio_te_por_libro en df_train
+        # cache["dict_lector_pais"] --> Tiene que estar la columna pais en los dfs lectores o calcularlo directamente en df_train
+        # cache["populares_trending"] --> Se construye con fecha_interaccion, que df_train que calculamos no la tiene. La tiene cuando pasa en los features

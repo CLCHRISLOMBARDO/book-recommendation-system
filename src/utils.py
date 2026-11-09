@@ -5,18 +5,16 @@ import os
 
 from sklearn.model_selection import train_test_split
 from lightgbm import LGBMRegressor ,LGBMRanker
-from sklearn.metrics import  ndcg_score
 import joblib
 import json
 import time
 
-from src.querys import query_caso_1,query_caso_2,query_caso_3
-from src.config import BASE_DB,TABLA_MODELO_FULL,EJEMPLO_FILE ,OUTPUTS_MODELO_TRAIN, OUTPUTS_MODELO_FINAL,OUTPUTS_DATASETS ,OUTPUTS_CHECKPOINTS ,OUTPUTS_RESULTADOS
-from src.config import FEATURES ,CAT_FEATURES,TARGET
-from src.feat_eng import pipeline_feature_engineering
-from src.retrievals import retrieval_q1_populares,retrieval_q2_mismo_autor,retrieval_q3_mismo_genero,retrieval_q4_popularidad_pais,retrieval_q5_trending,retrieval_hibrido
 
 
+from src.config import BASE_DB,TABLA_MODELO_FULL ,OUTPUTS_MODELO_TRAIN, OUTPUTS_MODELO_FINAL,OUTPUTS_DATASETS ,OUTPUTS_CHECKPOINTS ,OUTPUTS_RESULTADOS
+from src.config import FEATURES ,CAT_FEATURES,TARGET , OUTPUTS_EASE,OUTPUTS_FILTRADO_COLAB
+from src.metrics import calcular_recall, calcular_ndcg,calcular_ndcg_estricto  
+# Creacion de carpetas
 def folders_creation():
     
     os.makedirs(OUTPUTS_DATASETS, exist_ok=True)
@@ -24,14 +22,37 @@ def folders_creation():
     os.makedirs(OUTPUTS_MODELO_FINAL, exist_ok=True)
     os.makedirs(OUTPUTS_CHECKPOINTS, exist_ok=True)
     os.makedirs(OUTPUTS_RESULTADOS, exist_ok=True)
+    os.makedirs(OUTPUTS_FILTRADO_COLAB, exist_ok=True)
+    os.makedirs(OUTPUTS_EASE, exist_ok=True)
 
+# Split train test
 
+def cracion_df_total(tabla=TABLA_MODELO_FULL):
+    total_file = "df_total.parquet"
+    exist_total = False
+    if os.path.exists(OUTPUTS_DATASETS + total_file):
+        print("Ya existe archivo total")
+        exist_total = True
 
+    if exist_total  :
+        print(f" exist_total :{exist_total} ")
+        # 2. Usar read_parquet
+        df_total = pd.read_parquet(OUTPUTS_DATASETS + total_file)
+        return df_total
+    else: 
+        con = sqlite3.connect(BASE_DB)
+        df_total = pd.read_sql_query(f"""select id_lector, id_libro, fecha_interaccion, rating FROM {tabla}""",con)
+
+        df_total.to_parquet(OUTPUTS_DATASETS + total_file)
+    return df_total
+
+    
 def train_test_split_dfs(tabla = TABLA_MODELO_FULL): 
     print(f"************************************ Comenzando split train test ************************************")
-    train_file = "df_train.csv"
-    test_file = "df_test.csv"
-
+    # 1. Cambiar ambas extensiones a .parquet
+    train_file = "df_train.parquet"
+    test_file = "df_test.parquet"
+    
     exist_train = False
     exist_test = False 
     if os.path.exists(OUTPUTS_DATASETS + train_file):
@@ -41,14 +62,13 @@ def train_test_split_dfs(tabla = TABLA_MODELO_FULL):
         print("Ya existe archivo test")
         exist_test = True
 
-
-    
     if exist_train and exist_test :
-        print(f"exist train : {exist_train}   and   exist_test :{exist_test}")
-        df_train = pd.read_csv(OUTPUTS_DATASETS + train_file)
-        df_test = pd.read_csv(OUTPUTS_DATASETS + test_file)
+        print(f"exist train : {exist_train}   and   exist_test :{exist_test}  ")
+        # 2. Usar read_parquet
+        df_train = pd.read_parquet(OUTPUTS_DATASETS + train_file)
+        df_test = pd.read_parquet(OUTPUTS_DATASETS + test_file)
         return df_train , df_test
-    else : 
+    else: 
         con = sqlite3.connect(BASE_DB)
         id_lectores = pd.read_sql(f"""
                         SELECT id_lector
@@ -61,57 +81,78 @@ def train_test_split_dfs(tabla = TABLA_MODELO_FULL):
 
         for id_lector in id_lectores:
             id_libros = pd.read_sql(f"""
-                SELECT id_lector, id_libro, rating
+                SELECT id_lector, id_libro, fecha_interaccion, rating
                 FROM {tabla}
                 WHERE id_lector = ?
-                ORDER BY fecha
+                ORDER BY fecha_interaccion
             """, con, params=[id_lector])
 
-
             df_train = pd.concat([df_train, id_libros[:-20]], axis=0)
-            df_test = pd.concat([df_test, id_libros[-20:]], axis=0)
-
+            df_test = pd.concat([df_test, id_libros[-20:]], axis=0)        
+        # 3. Usar to_parquet (index=False se omite porque Parquet maneja el índice automáticamente)
+        df_train.to_parquet(OUTPUTS_DATASETS + train_file)
+        df_test.to_parquet(OUTPUTS_DATASETS + test_file)
+        
+        df_train.to_sql(name='interacciones_train', con=con, if_exists='replace', index=False)
+        df_test.to_sql(name='interacciones_test', con=con, if_exists='replace', index=False)
         con.close()
-        # Guardo los archivos
-        df_train.to_csv(OUTPUTS_DATASETS + train_file, index=False)
-        df_test.to_csv(OUTPUTS_DATASETS + test_file, index=False)
-
-    return df_train , df_test
+    return df_train , df_test 
 
 
+def train_test_split_dfs_corte_year(tabla = TABLA_MODELO_FULL,year=2024): 
+    print(f"************************************ Comenzando split train test ************************************")
+    # 1. Cambiar ambas extensiones a .parquet
+    train_file = "df_train.parquet"
+    test_file = "df_test.parquet"
 
-def todos_los_libros()-> pd.DataFrame:
-    print(f"************************************ Comenzando lista todos los libros  ************************************")
-
-    
-    con = sqlite3.connect(BASE_DB)
-
-    list_todos_los_libros = pd.read_sql("SELECT id_libro FROM libros", con)["id_libro"]
-    con.close()
-    return list_todos_los_libros
-
-#def retrieval(df_train:pd.DataFrame, id_lector  , list_todos_los_libros:list):
- #   """Retorna todos los libros que se pueden recomendar a id_lector"""
-  #  print(f"************************************ Comenzando retrieval libros para id : {id_lector}************************************")
-
-
-#    libros_leidos = df_train[df_train["id_lector"] == id_lector]["id_libro"].to_list()
- #   libros_no_leidos = list_todos_los_libros[~list_todos_los_libros.isin(libros_leidos)]
-
-  #  print(f"Libros leidos : {len(libros_leidos)}")
-   # print(f"Libros no leidos : {len(libros_no_leidos)}")
-
-    #return libros_no_leidos.to_list()
+    exist_train = False
+    exist_test = False 
+    if os.path.exists(OUTPUTS_DATASETS + train_file):
+        print("Ya existe archivo train")
+        exist_train = True
+    if os.path.exists(OUTPUTS_DATASETS + test_file):
+        print("Ya existe archivo test")
+        exist_test = True
 
 
-def selecc_features(feats_outs_exp :list[str]):
-    print("************************************ Comienzo seleccion features ************************************")
-    features_seleccionadas = [c for c in FEATURES if c not in feats_outs_exp]
-    print(f"Features Seleccionadas : {features_seleccionadas}")
-    return features_seleccionadas
+    if exist_train and exist_test:
+        print(f"exist train : {exist_train}   and   exist_test :{exist_test}  ")
+        # 2. Usar read_parquet
+        df_train = pd.read_parquet(OUTPUTS_DATASETS + train_file)
+        df_test = pd.read_parquet(OUTPUTS_DATASETS + test_file)
+        return df_train , df_test 
+    else: 
+        
+        
+        df_total = cracion_df_total()
+        
+        df_total['col_fecha'] = pd.to_datetime(df_total['fecha_interaccion'],format='%Y-%m-%d' ,errors='coerce')
+        df_total['year'] = df_total['col_fecha'].dt.year.astype('Int64')
+        df_train = df_total.copy()
+        df_train = df_train[df_train['year']<year]
+        df_test = df_total.copy()
+        df_test = df_test[df_test['year'] >= year]
+        
+        print("*"*30+" VALORES df_total:")
+        print(f"Shape:{df_total.shape} \nLectores unicos: {df_total.id_lector.nunique()} \nAños:{df_total.year.value_counts(dropna=False).sort_index()} ")
+        print(f"Shape:{df_train.shape} \nLectores unicos: {df_train.id_lector.nunique()} \nAños:{df_train.year.value_counts(dropna=False).sort_index()} ")
+        print(f"Shape:{df_test.shape} \nLectores unicos: {df_test.id_lector.nunique()} \nAños:{df_test.year.value_counts(dropna=False).sort_index()} ")
+        
+        # 3. Usar to_parquet (index=False se omite porque Parquet maneja el índice automáticamente)
+        df_train.to_parquet(OUTPUTS_DATASETS + train_file)
+        df_test.to_parquet(OUTPUTS_DATASETS + test_file)
+        
+        con = sqlite3.connect(BASE_DB)
+        df_train.to_sql(name='interacciones_train', con=con, if_exists='replace', index=False)
+        df_test.to_sql(name='interacciones_test', con=con, if_exists='replace', index=False)
+        con.close()
+        df_train = df_train.drop(columns = ['col_fecha','year'])
+        df_test = df_test.drop(columns = ['col_fecha','year'])
+    return df_train , df_test 
 
-
+# MODELOS LGBM
 def model_baseline_train_lgbm_reg(df_train:pd.DataFrame ,features_seleccionadas:list[str] , seed:int):
+    '''df_train puede ser solo el de la fase de entrenamiento o el total incluyendo al test para la pred final'''
     print("************************************ Comienzo entrenamiendo modelo base ************************************")
     print(f"Features seleccionadas para el entrenamiento : {features_seleccionadas}")
     print(f"Target : {TARGET}")
@@ -134,8 +175,6 @@ def model_baseline_train_lgbm_reg(df_train:pd.DataFrame ,features_seleccionadas:
     ) 
     joblib.dump(modelo_lgbm, OUTPUTS_MODELO_TRAIN +f'modelo_lgbm_reg.pkl')
     return modelo_lgbm
-
-
 def model_baseline_train_lgbm_ranker(df_train: pd.DataFrame, features_seleccionadas: list[str], seed: int):
     print("************************************ Comienzo entrenamiento modelo RANKER (LGBMRanker) ************************************")
     print(f"Features seleccionadas para el entrenamiento : {features_seleccionadas}")
@@ -177,9 +216,6 @@ def model_baseline_train_lgbm_ranker(df_train: pd.DataFrame, features_selecciona
     joblib.dump(modelo_lgbm, OUTPUTS_MODELO_TRAIN +f'modelo_lgbm_ranker.pkl')
     
     return modelo_lgbm
-
-
-
 def calcular_feature_importance(modelo_lgbm, model_type :str ) -> pd.DataFrame:
     """
     Extrae la importancia de las variables de un modelo LightGBM entrenado,
@@ -214,397 +250,106 @@ def calcular_feature_importance(modelo_lgbm, model_type :str ) -> pd.DataFrame:
     
     return df_importances
 
-def evaluar_experimentos(df_test, df_train_features, modelo_lgbm_reg=None,modelo_lgbm_ranker=None):
-    
-    # 1. Definimos el diccionario de Retrievals a evaluar
-    estrategias_retrieval = {
-        "Q1_Populares": lambda u: retrieval_q1_populares(df_train_features, u, top_n=100),
-        "Q2_Mismo_Autor" : lambda u: retrieval_q2_mismo_autor(df_train_features, u, top_n=100),
-        "Q3_Mismo_Genero" : lambda u: retrieval_q3_mismo_genero(df_train_features, u, top_n=100),
-        "Q4_Popularidad_Pais": lambda u: retrieval_q4_popularidad_pais(df_train_features, u, top_n=100),
-        "Q5_Trending": lambda u: retrieval_q5_trending(df_train_features, u, top_n=100),
-        "Hibrido": lambda u: retrieval_hibrido(df_train_features, u, top_n_por_query=25)
-    }
+# EVALUAR EXPERIMENTOS
 
-    # 2. Definimos los Sistemas de ordenamiento
-    estrategias_ordenamiento = ["Ordenamiento_Popularidad"]
-    if modelo_lgbm_reg is not None:
-        estrategias_ordenamiento.append("Ordenamiento_LGBMRegressor")
-        features_del_modelo_regressor = modelo_lgbm_reg.booster_.feature_name()
-        os.makedirs(OUTPUTS_MODELO_TRAIN + 'lgbm_reg/', exist_ok=True) # ELIMINAR ESTA FILA
-
-    if modelo_lgbm_ranker is not None:
-        estrategias_ordenamiento.append("Ordenamiento_LGBMRanker")
-        features_del_modelo_ranker = modelo_lgbm_ranker.booster_.feature_name()
-        os.makedirs(OUTPUTS_MODELO_TRAIN + 'lgbm_ranker/', exist_ok=True) # ELIMINAR ESTA FILA
-    
-    pop_dict = df_train_features.groupby("id_libro")["rating_promedio_te_por_libro"].max().to_dict()
-    media_global = df_train_features["rating"].mean()
+def evaluar_experimentos(df_test, cache, estrategias_retrieval, estrategias_ranker, top_n_retrieval=100):
+    """
+    Motor agnóstico de evaluación. Cruza cualquier Retrieval con cualquier Ranker.
+    """
+    path_checkpoints = OUTPUTS_CHECKPOINTS
+    path_resultados = OUTPUTS_RESULTADOS
     
     resultados_totales = []
-
+    usuarios_test = df_test["id_lector"].unique()
     
-    # Iteramos sobre la matriz de experimentos (Retrieval x Ordenamiento)
-    for nombre_retrieval, func_retrieval in estrategias_retrieval.items():
-        for nombre_ordenamiento in estrategias_ordenamiento:
-            
-            print(f"\n ***************** Evaluando: Retrieval=[{nombre_retrieval}] | Ordenamiento=[{nombre_ordenamiento}]***************")
-            inicio = time.time()
+    # 1. OPTIMIZACIÓN: Pre-calculamos el ground truth de Test para todos los usuarios de una vez
+    # Formato: {id_lector: {id_libro: rating}}
+    print("Pre-calculando Ground Truth de Test...")
+    ground_truth = (
+        df_test.groupby("id_lector")
+        .apply(lambda x: dict(zip(x["id_libro"], x["rating"])))
+        .to_dict()
+    )
 
-            checkpoint_file = OUTPUTS_CHECKPOINTS+ f"ckpt_{nombre_retrieval}_{nombre_ordenamiento}.csv"
-            usuarios_procesados = {}
+    # 2. Bucles de Evaluación
+    for nombre_retrieval, func_retrieval in estrategias_retrieval.items():
+        for nombre_ranker, func_ranker in estrategias_ranker.items():
             
-            # --- RECUPERA CHECKPOINT (Si el script se había cortado) ---
+            print(f"\n{'='*70}")
+            print(f"Evaluando: Retrieval=[{nombre_retrieval}] | Ranker=[{nombre_ranker}]")
+            print(f"{'='*70}")
+            
+            inicio = time.time()
+            checkpoint_file = os.path.join(path_checkpoints, f"ckpt_{nombre_retrieval}_{nombre_ranker}.csv")
+            
+            usuarios_procesados = set()
+            ndcg_lista = []
+            recall_lista = []
+            
+            # --- RECUPERA CHECKPOINT ---
             if os.path.exists(checkpoint_file):
                 print(f" -> Encontrado checkpoint previo: {checkpoint_file}. Retomando...")
                 df_ckpt = pd.read_csv(checkpoint_file)
                 for _, row in df_ckpt.iterrows():
-                    usuarios_procesados[row["id_lector"]] = {
-                        "recall": row["recall"],
-                        "ndcg": row["ndcg"]
-                    }
-
-            # Cargamos las listas con los valores ya calculados de antes
-            ndcg_lista = [v["ndcg"] for v in usuarios_procesados.values()]
-            recall_retrieval_lista = [v["recall"] for v in usuarios_procesados.values()]
-
-            usuarios_test = df_test["id_lector"].unique() 
-            nuevos_procesados_en_esta_sesion = 0
+                    usuarios_procesados.add(row["id_lector"])
+                    recall_lista.append(row["recall"])
+                    ndcg_lista.append(row["ndcg"])
+                    
+            nuevos_procesados = 0
             
-            # --- BUCLE DE EVALUACIÓN POR USUARIO ---
+            # --- BUCLE POR USUARIO ---
             for id_lector in usuarios_test:
-                
                 if id_lector in usuarios_procesados:
                     continue
                     
+                # Obtenemos los libros que realmente leyó y sus ratings
+                true_relevance_dict = ground_truth.get(id_lector, {})
+                
                 # --- FASE 1: RETRIEVAL ---
-                libros_candidatos = func_retrieval(id_lector)
+                candidatos = func_retrieval(id_lector, top_n=top_n_retrieval, cache=cache)
+                recall = calcular_recall(candidatos, true_relevance_dict)
                 
+                # --- FASE 2: RANKING ---
+                scores_predichos = func_ranker(id_lector, candidatos, cache=cache)
+                ndcg = calcular_ndcg_estricto(true_relevance_dict, scores_predichos, k=20)
                 
-                subset_test = df_test[df_test["id_lector"] == id_lector]
-                true_relevance_dict = subset_test.set_index("id_libro")["rating"].to_dict()
-                libros_test_reales = set(true_relevance_dict.keys())
+                # Guardamos en memoria
+                recall_lista.append(recall)
+                ndcg_lista.append(ndcg)
                 
-                hits = len(set(libros_candidatos).intersection(libros_test_reales))
-                recall_retrieval = hits / len(libros_test_reales) if len(libros_test_reales) > 0 else 0
-
-                # --- FASE 2: ORDENAMIENTO ---
-                predicted_scores_dict = {}
-
-                
-                if len(libros_candidatos) > 0:
-                    if nombre_ordenamiento == "Ordenamiento_Popularidad":
-                        for lib in libros_candidatos:
-                            predicted_scores_dict[lib] = pop_dict.get(lib, media_global)
-                            
-                    elif nombre_ordenamiento == "Ordenamiento_LGBMRegressor" and modelo_lgbm_reg is not None:
-                        df_candidatos = pd.DataFrame({
-                                "id_lector": [id_lector] * len(libros_candidatos),
-                                "id_libro": libros_candidatos
-                            })
-                        
-                        df_candidatos_feat = pipeline_feature_engineering(df_candidatos, state="test", df_historia=df_train_features)
-                        
-                        X_candidatos = df_candidatos_feat[features_del_modelo_regressor].copy()
-
-                        cat_features_eval = [c for c in CAT_FEATURES if c in features_del_modelo_regressor]
-                        for c in cat_features_eval:
-                            # Alineamos categorías con el train para que LightGBM no explote
-                            X_candidatos[c] = pd.Categorical(X_candidatos[c], categories=df_train_features[c].cat.categories)
-
-
-                        y_pred = modelo_lgbm_reg.predict(X_candidatos)
-                        predicted_scores_dict = dict(zip(libros_candidatos, y_pred))
-
-                    elif nombre_ordenamiento == "Ordenamiento_LGBMRanker" and modelo_lgbm_ranker is not None:
-                        df_candidatos = pd.DataFrame({
-                                "id_lector": [id_lector] * len(libros_candidatos),
-                                "id_libro": libros_candidatos
-                            })
-                        
-                        df_candidatos_feat = pipeline_feature_engineering(df_candidatos, state="test", df_historia=df_train_features)
-                        
-                        X_candidatos = df_candidatos_feat[features_del_modelo_ranker].copy()
-
-                        cat_features_eval = [c for c in CAT_FEATURES if c in features_del_modelo_ranker]
-                        for c in cat_features_eval:
-                            # Alineamos categorías con el train para que LightGBM no explote
-                            X_candidatos[c] = pd.Categorical(X_candidatos[c], categories=df_train_features[c].cat.categories)
-
-
-                        y_pred = modelo_lgbm_ranker.predict(X_candidatos)
-                        predicted_scores_dict = dict(zip(libros_candidatos, y_pred))
-                # --- FASE 3: MÉTRICAS DE ORDENAMIENTO (NDCG) ---
-                # ¡EL PARCHE PARA NO INFLAR EL NDCG EN COLD-START!
-                if len(libros_candidatos) == 0:
-                    ndcg_val = 0.0
-                else:
-                    #id_libros_totales = list(set(list(true_relevance_dict.keys()) + list(predicted_scores_dict.keys())))
-                    # 1. ORDENAMOS ALFABÉTICAMENTE para destruir el sesgo de la concatenación
-                    id_libros_totales = sorted(list(set(list(true_relevance_dict.keys()) + list(predicted_scores_dict.keys()))))
-
-                    if len(id_libros_totales) > 0:
-                        y_true = np.asarray([[true_relevance_dict.get(id_libro, 0) for id_libro in id_libros_totales]])
-                        #y_score = np.asarray([[predicted_scores_dict.get(id_libro, 0) for id_libro in id_libros_totales]])
-                        
-                        # El -99999 manda a los libros no recuperados al fondo
-                        y_score_base = np.asarray([[predicted_scores_dict.get(id_libro, -99999) for id_libro in id_libros_totales]])
-
-                        # 2. ROMPEMOS EMPATES: Sumamos un ruido aleatorio invisible (ej: 0.000004)
-                        y_score = y_score_base + np.random.uniform(0, 1e-5, size=y_score_base.shape)
-
-                        ndcg_val = ndcg_score(y_true, y_score, k=20)
-                    else:
-                        ndcg_val = 0.0
-
-                ndcg_lista.append(ndcg_val)
-                recall_retrieval_lista.append(recall_retrieval)
-                # --- GUARDA CHECKPOINT (Después de cada usuario) ---
-                # Creamos un DF con 1 sola fila
+                # --- GUARDA CHECKPOINT ---
                 registro_nuevo = pd.DataFrame([{
                     "id_lector": id_lector,
-                    "recall": recall_retrieval,
-                    "ndcg": ndcg_val
+                    "recall": recall,
+                    "ndcg": ndcg
                 }])
-                # Se pega (append) al archivo en disco sin borrar lo anterior
                 registro_nuevo.to_csv(checkpoint_file, mode='a', header=not os.path.exists(checkpoint_file), index=False)
                 
-                nuevos_procesados_en_esta_sesion += 1
-                if nuevos_procesados_en_esta_sesion % 50 == 0:
-                    print(f"   -> Procesados {nuevos_procesados_en_esta_sesion} usuarios...")
-                    print(f"Tamaño libros candidatos : {len(libros_candidatos)}")
-
-            # --- FIN DEL BUCLE DE USUARIOS (Cálculo promedio del experimento) ---
+                nuevos_procesados += 1
+                if nuevos_procesados % 100 == 0:
+                    print(f"   -> Procesados {nuevos_procesados} usuarios nuevos...")
+            
+            # --- FIN DEL EXPERIMENTO (Cálculo de Promedios) ---
+            tiempo_total = round(time.time() - inicio, 2)
+            mean_recall = np.mean(recall_lista) if recall_lista else 0.0
+            mean_ndcg = np.mean(ndcg_lista) if ndcg_lista else 0.0
+            
             resultados_totales.append({
                 "Retrieval": nombre_retrieval,
-                "Ordenamiento_system": nombre_ordenamiento,
-                "Recall_Retrieval_Promedio": np.mean(recall_retrieval_lista),
-                "NDCG@20_Promedio": np.mean(ndcg_lista),
-                "Tiempo_Segundos": round(time.time() - inicio, 2)
+                "Ranker": nombre_ranker,
+                "Recall_Retrieval_Promedio": mean_recall,
+                "NDCG@20_Promedio": mean_ndcg,
+                "Tiempo_Segundos": tiempo_total
             })
             
-            print(f" -> NDCG@20: {np.mean(ndcg_lista):.4f} | Recall: {np.mean(recall_retrieval_lista):.4f}")
-
-    # Al finalizar todos los cruces, exporta la tabla bonita
+            print(f" -> RESULTADO | NDCG@20: {mean_ndcg:.4f} | Recall: {mean_recall:.4f} | Tiempo: {tiempo_total}s")
+            
+    # --- EXPORTACIÓN FINAL ---
     df_resultados = pd.DataFrame(resultados_totales)
-    df_resultados.to_csv(OUTPUTS_RESULTADOS +"resultados_experimentos.csv", index=False)
-    print(f"Resultados guardados con éxito en {OUTPUTS_RESULTADOS} resultados_experimentos.csv")
+    os.makedirs(path_resultados, exist_ok=True)
+    archivo_final = os.path.join(path_resultados, "resultados_experimentos.csv")
+    df_resultados.to_csv(archivo_final, index=False)
     
+    print(f"\nExperimentos finalizados. Resultados guardados en: {archivo_final}")
     return df_resultados
 
-
-
-
-
-
-
-
-def entrenamiento_modelo_final(df:pd.DataFrame ,features_seleccionadas:list[str] , seed:int,experiment_name :str):
-    print(f"************************************ Comienzo entrenamiendo modelo base final :{experiment_name} ************************************")
-    print(f"Features seleccionadas para el entrenamiento : {features_seleccionadas}")
-    print(f"Target : {TARGET}")
-
-    cat_features=[c for c in CAT_FEATURES if c in features_seleccionadas]
-
-    modelo_lgbm = LGBMRegressor(
-        random_state=seed
-    )
-    X = df[features_seleccionadas]
-    y = df[TARGET]
-
-    modelo_lgbm.fit(
-        X, 
-        y,
-        categorical_feature=cat_features 
-    ) 
-    file_model = OUTPUTS_MODELO_FINAL + f"modelo_final_{experiment_name}.pkl"
-
-    joblib.dump(modelo_lgbm, file_model)
-    print(f"Modelo guardado exitosamente en: {file_model}")
-
-    feat_imp_final = calcular_feature_importance(modelo_lgbm,experiment_name , True)
-    return modelo_lgbm ,feat_imp_final
-
-def prediccion_usuarios_final(df_base_modelado:pd.DataFrame,features_seleccionadas:list[str] , model,experiment_name :str):
-    """
-    df_base_modelado es el df que viene del flujo con que se modelo --> De la tabla BASE_MODELO_FULL_FEAT_ENG. 
-    Lo usamos para poder identificar a los ids que ya estaban ahi.  Los que no estaban eran :
-            * alpacil : estaba en interacciones pero no en lectores
-            * '102893014085601872783', '103084137542939876557', '104186425412399255991', 
-            '114281238546612894708', '115834876939320404006', '115884316008551273059',
-                '116044910452339432768', 'acastrop', 'alpasil', 'carlosecheve', 'diegodacosta',
-                  'eduardexhp', 'india', 'pequod', 'raf86', 'tommycaceres','victor27' : No estaban en interacciones
-    """
-    print("************************************ Comienzo prediccion final ************************************")
-
-    cat_features=[c for c in CAT_FEATURES if c in features_seleccionadas]
-
-    df_ejemplo = pd.read_csv(EJEMPLO_FILE)
-    ids_a_predecir=list(df_ejemplo.id_lector.unique())
-    ids_modelado = list(df_base_modelado.id_lector.unique())
-
-    # Me traigo todos los libros
-    con = sqlite3.connect(BASE_DB)
-
-
-    query = """SELECT distinct(id_lector) FROM interacciones i left join lectores l using(id_lector) where l.id_lector IS NULL """
-    ids_si_inter_no_lectores = pd.read_sql_query(query,con)
-    ids_si_inter_no_lectores=ids_si_inter_no_lectores.id_lector.to_list()
-    ids_si_inter_no_lectores = [c for c in ids_si_inter_no_lectores if c in ids_a_predecir]
-
-    query = """SELECT distinct(id_lector) FROM lectores l left join interacciones i using(id_lector) where i.id_lector IS NULL """
-    ids_no_inter_si_lectores = pd.read_sql_query(query,con)
-    ids_no_inter_si_lectores=ids_no_inter_si_lectores.id_lector.to_list()
-    ids_no_inter_si_lectores = [c for c in ids_no_inter_si_lectores if c in ids_a_predecir]
-
-
-    #con.close()
-    # Definimos las rutas de los archivos
-    file_json_temp = OUTPUTS_MODELO_FINAL + f"checkpoint_{experiment_name}.json"
-    try :
-        with open(file_json_temp,'r',encoding='utf-8') as f:
-           resultados_dict=json.load(f)
-           if len(resultados_dict.keys()) == len(ids_a_predecir):
-               print(f"Ya esta completado el json de los resultados : {file_json_temp} !! Pasar a la preparacion del envio")
-               return
-    except (FileNotFoundError, json.JSONDecodeError):
-        print(f"Aun no se comenzo con los resultados finales del exp : {experiment_name}")
-        resultados_dict = {}
-
-    for id_i in ids_a_predecir:
-        if id_i in resultados_dict.keys():
-            continue
-
-        if id_i in ids_modelado:
-            query=query_caso_1
-            df_candidatos = pd.read_sql_query(query, con, params=(id_i, id_i, id_i))
-            for col in cat_features:
-                if col in df_candidatos.columns:
-                    df_candidatos[col] = df_candidatos[col].astype('category')
-                    
-            # 2. Forzamos a numéricas (float) el resto de las variables seleccionadas
-            num_features = [c for c in features_seleccionadas if c not in cat_features]
-            for col in num_features:
-                if col in df_candidatos.columns:
-                    df_candidatos[col] = pd.to_numeric(df_candidatos[col], errors='coerce').astype(float)
-            X = df_candidatos[features_seleccionadas]
-            df_candidatos['score'] = model.predict(X)
-
-            # NUEVO: Guardamos ID y Score
-            top_20_df = df_candidatos.sort_values(by='score', ascending=False).head(20).copy()
-            top_20_df['score'] = top_20_df['score'].astype(float) # Casteo seguro para JSON
-            top_20_libros = top_20_df[['id_libro', 'score']].to_dict(orient='records')
-            
-            resultados_dict[id_i] = top_20_libros
-            with open(file_json_temp, 'w') as f:
-                json.dump(resultados_dict, f)
-            print(f"¡Proceso para el id {id_i} terminado. Respaldo JSON en: {file_json_temp}")
-
-        elif id_i in ids_si_inter_no_lectores:
-            print(f"el id:{id_i} entra a ids_si_inter_no_lectores")
-            query = query_caso_2
-            df_candidatos = pd.read_sql_query(query, con, params=(id_i, id_i, id_i, id_i, id_i, id_i))
-            
-            for col in cat_features:
-                if col in df_candidatos.columns:
-                    df_candidatos[col] = df_candidatos[col].astype('category')
-                    
-            # 2. Forzamos a numéricas (float) el resto de las variables seleccionadas
-            num_features = [c for c in features_seleccionadas if c not in cat_features]
-            for col in num_features:
-                if col in df_candidatos.columns:
-                    df_candidatos[col] = pd.to_numeric(df_candidatos[col], errors='coerce').astype(float)
-            X = df_candidatos[features_seleccionadas]
-            df_candidatos['score'] = model.predict(X)
-            
-            # NUEVO: Guardamos ID y Score
-            top_20_df = df_candidatos.sort_values(by='score', ascending=False).head(20).copy()
-            top_20_df['score'] = top_20_df['score'].astype(float) # Casteo seguro para JSON
-            top_20_libros = top_20_df[['id_libro', 'score']].to_dict(orient='records')
-            
-            resultados_dict[id_i] = top_20_libros
-            with open(file_json_temp, 'w') as f:
-                json.dump(resultados_dict, f)
-            print(f"¡Proceso para el id {id_i} terminado. Respaldo JSON en: {file_json_temp}")
-        elif id_i in ids_no_inter_si_lectores:
-            print(f"el id:{id_i} entra a ids_no_inter_si_lectores")
-            query = query_caso_3
-            df_candidatos = pd.read_sql_query(query, con, params=(id_i,))
-            for col in cat_features:
-                if col in df_candidatos.columns:
-                    df_candidatos[col] = df_candidatos[col].astype('category')
-                    
-            # 2. Forzamos a numéricas (float) el resto de las variables seleccionadas
-            num_features = [c for c in features_seleccionadas if c not in cat_features]
-            for col in num_features:
-                if col in df_candidatos.columns:
-                    df_candidatos[col] = pd.to_numeric(df_candidatos[col], errors='coerce').astype(float)
-            
-            X = df_candidatos[features_seleccionadas]
-            df_candidatos['score'] = model.predict(X)
-            
-            # NUEVO: Guardamos ID y Score
-            top_20_df = df_candidatos.sort_values(by='score', ascending=False).head(20).copy()
-            top_20_df['score'] = top_20_df['score'].astype(float) # Casteo seguro para JSON
-            top_20_libros = top_20_df[['id_libro', 'score']].to_dict(orient='records')
-            
-            resultados_dict[id_i] = top_20_libros
-            with open(file_json_temp, 'w') as f:
-                json.dump(resultados_dict, f)
-            print(f"¡Proceso para el id {id_i} terminado. Respaldo JSON en: {file_json_temp}")
-
-    print(f"¡Proceso TOTAL terminado! Respaldo JSON en: {file_json_temp}")
-
-    con.close()
-    return resultados_dict
-def preparacion_envio(experiment_name):
-    # Definimos la ruta para el segundo archivo con scores
-    file_results_csv = OUTPUTS_MODELO_FINAL + f"results_finales_{experiment_name}.csv"
-    file_results_scores_csv = OUTPUTS_MODELO_FINAL + f"results_finales_{experiment_name}_con_scores.csv"
-    file_json_temp = OUTPUTS_MODELO_FINAL + f"checkpoint_{experiment_name}.json"
-
-    with open(file_json_temp,'r',encoding='utf-8') as f:
-        resultados_dict=json.load(f)
-
-    filas_kaggle = []
-    filas_analisis = []
-    
-    for lector, libros in resultados_dict.items():
-        # Ahora "libros" es una lista de diccionarios
-        for item in libros:
-            # Archivo para Kaggle (sin score)
-            filas_kaggle.append({'id_lector': lector, 'id_libro': item['id_libro']})
-            # Archivo para Análisis (con score)
-            filas_analisis.append({'id_lector': lector, 'id_libro': item['id_libro'], 'score': item['score']})
-            
-    # 1. Armamos y exportamos el archivo oficial (Kaggle)
-    resultados_finales = pd.DataFrame(filas_kaggle)
-    resultados_finales.to_csv(file_results_csv, index=False)
-    
-    # 2. Armamos y exportamos el archivo interno (Análisis)
-    resultados_con_scores = pd.DataFrame(filas_analisis)
-    resultados_con_scores.to_csv(file_results_scores_csv, index=False)
-    
-    print(f"CSV para Kaggle generado en: {file_results_csv}")
-    print(f"CSV de análisis con scores generado en: {file_results_scores_csv}")
-    
-    # Opcional: devolvemos ambos DataFrames por si querés usarlos en el Notebook
-    return resultados_finales, resultados_con_scores
-
-def preparacion_envio_old(experiment_name):
-    file_results_csv = OUTPUTS_MODELO_FINAL + f"results_finales_{experiment_name}.csv"
-    file_json_temp = OUTPUTS_MODELO_FINAL + f"checkpoint_{experiment_name}.json"
-
-    with open(file_json_temp,'r',encoding='utf-8') as f:
-        resultados_dict=json.load(f)
-
-    filas_para_df = []
-    for lector, libros in resultados_dict.items():
-        for libro in libros:
-            filas_para_df.append({'id_lector': lector, 'id_libro': libro})
-            
-    resultados_finales = pd.DataFrame(filas_para_df)
-    resultados_finales.to_csv(file_results_csv, index=False)
-    print(f"CSV final generado en: {file_results_csv}")
-    
-    return resultados_finales
